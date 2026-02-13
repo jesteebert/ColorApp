@@ -7,15 +7,19 @@
   <title>Camera Sender</title>
   <style>
     body { font-family: sans-serif; display:flex; flex-direction:column; gap:12px; align-items:center; padding:12px; }
-    video { width: 100%; max-width:420px; border-radius:8px; background:#000; transition: filter 0.1s ease; }    button { padding:10px 14px; border-radius:8px; border:none; background:#667eea; color:#fff; font-weight:600; }
-    .camera-controls { display:flex; gap:8px; width:100%; max-width:420px; justify-content:center; margin-top:8px; }
-.control-button { padding:8px 12px; border-radius:6px; border:none; background:#764ba2; color:#fff; font-weight:600; font-size:13px; flex:1; }
-.control-button.active { background:#28a745; }
-video.focus-animation { animation: focusPulse 0.3s ease; }
-@keyframes focusPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(0.98); }
-}
+    .video-wrapper { position: relative; width: 100%; max-width: 420px; }
+    video { width: 100%; border-radius:8px; background:#000; transition: filter 0.1s ease; display: block; }
+    #gridOverlay { position: absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; border-radius:8px; display:none; }
+    #frozenBadge { position:absolute; top:8px; left:50%; transform:translateX(-50%); background:rgba(0,120,255,0.85); color:#fff; font-size:12px; font-weight:700; padding:4px 12px; border-radius:20px; display:none; }
+    button { padding:10px 14px; border-radius:8px; border:none; background:#667eea; color:#fff; font-weight:600; }
+    .camera-controls { display:flex; gap:6px; width:100%; max-width:420px; justify-content:center; margin-top:8px; flex-wrap:wrap; }
+    .control-button { padding:8px 10px; border-radius:6px; border:none; background:#764ba2; color:#fff; font-weight:600; font-size:12px; flex:1; min-width:70px; }
+    .control-button.active { background:#28a745; }
+    video.focus-animation { animation: focusPulse 0.3s ease; }
+    @keyframes focusPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(0.98); }
+    }
     .controls { display:flex; gap:8px; width:100%; max-width:420px; justify-content:center; }
     input[type=checkbox]{ transform:scale(1.2); margin-right:6px; }
     .status { font-size:13px; color:#333; }
@@ -23,7 +27,11 @@ video.focus-animation { animation: focusPulse 0.3s ease; }
 </head>
 <body>
   <h2>Phone → Computer: Camera Sender</h2>
-  <video id="video" autoplay playsinline></video>
+  <div class="video-wrapper">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="gridOverlay"></canvas>
+    <div id="frozenBadge">❄️ FROZEN</div>
+  </div>
 <div class="controls">
     <button id="snapBtn">📸 Snap & Send</button>
     <button id="startAutoBtn">▶️ Start Auto</button>
@@ -34,12 +42,12 @@ video.focus-animation { animation: focusPulse 0.3s ease; }
   <div class="camera-controls">
     <button id="switchCameraBtn" class="control-button">🔄 Switch Camera</button>
     <button id="flashBtn" class="control-button">💡 Flash: Off</button>
+    <button id="freezeBtn" class="control-button">❄️ Freeze</button>
+    <button id="gridBtn" class="control-button">⊞ Grid: Off</button>
   </div>
 
-  <div style="display:flex; gap:10px; align-items:center; margin-top:6px;">
-    <label><input type="checkbox" id="lowQualityCheckbox<div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
-<div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
-    <label><input type="checkbox" id="lowQuality">Low quality (smaller images)</label>
+  <div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
+    <label><input type="checkbox" id="lowQuality"> Low quality (smaller images)</label>
     
     <div style="display:flex; flex-direction:column; gap:4px;">
       <label style="font-size:13px; font-weight:600;">Auto Send FPS:</label>
@@ -66,7 +74,6 @@ video.focus-animation { animation: focusPulse 0.3s ease; }
         <span id="exposureValue" style="font-weight:700; min-width:60px;">0</span>
       </div>
     </div>
-  </div>y">Low quality (smaller images)</label>
   </div>
 
   <p class="status" id="status">Not connected</p>
@@ -82,13 +89,59 @@ video.focus-animation { animation: focusPulse 0.3s ease; }
   const statusEl = document.getElementById('status');
   const lowQualityCheckbox = document.getElementById('lowQuality');
   const fpsSlider = document.getElementById('fpsSlider');
-const fpsValue = document.getElementById('fpsValue');
-const switchCameraBtn = document.getElementById('switchCameraBtn');
-const flashBtn = document.getElementById('flashBtn');
-const zoomSlider = document.getElementById('zoomSlider');
-const zoomValue = document.getElementById('zoomValue');
-const exposureSlider = document.getElementById('exposureSlider');
-const exposureValue = document.getElementById('exposureValue');
+  const fpsValue = document.getElementById('fpsValue');
+  const switchCameraBtn = document.getElementById('switchCameraBtn');
+  const flashBtn = document.getElementById('flashBtn');
+  const freezeBtn = document.getElementById('freezeBtn');
+  const gridBtn = document.getElementById('gridBtn');
+  const gridOverlay = document.getElementById('gridOverlay');
+  const frozenBadge = document.getElementById('frozenBadge');
+  const zoomSlider = document.getElementById('zoomSlider');
+  const zoomValue = document.getElementById('zoomValue');
+  const exposureSlider = document.getElementById('exposureSlider');
+  const exposureValue = document.getElementById('exposureValue');
+
+// Freeze / unfreeze
+let isFrozen = false;
+freezeBtn.addEventListener('click', () => {
+  isFrozen = !isFrozen;
+  freezeBtn.textContent  = isFrozen ? '▶️ Unfreeze' : '❄️ Freeze';
+  freezeBtn.classList.toggle('active', isFrozen);
+  frozenBadge.style.display = isFrozen ? 'block' : 'none';
+  statusEl.textContent = isFrozen ? 'Frame frozen — pick colors freely' : 'Camera active';
+});
+
+// Rule-of-thirds grid overlay
+let gridVisible = false;
+function drawGrid() {
+  const w = gridOverlay.width  = gridOverlay.offsetWidth;
+  const h = gridOverlay.height = gridOverlay.offsetHeight;
+  const gCtx = gridOverlay.getContext('2d');
+  gCtx.clearRect(0, 0, w, h);
+  if (!gridVisible) return;
+  gCtx.strokeStyle = 'rgba(255,255,255,0.55)';
+  gCtx.lineWidth = 1;
+  // Thirds
+  [1/3, 2/3].forEach(t => {
+    gCtx.beginPath(); gCtx.moveTo(w * t, 0); gCtx.lineTo(w * t, h); gCtx.stroke();
+    gCtx.beginPath(); gCtx.moveTo(0, h * t); gCtx.lineTo(w, h * t); gCtx.stroke();
+  });
+  // Power points (intersections)
+  gCtx.fillStyle = 'rgba(255,255,255,0.8)';
+  [1/3, 2/3].forEach(tx => [1/3, 2/3].forEach(ty => {
+    gCtx.beginPath();
+    gCtx.arc(w * tx, h * ty, 4, 0, Math.PI * 2);
+    gCtx.fill();
+  }));
+}
+gridBtn.addEventListener('click', () => {
+  gridVisible = !gridVisible;
+  gridOverlay.style.display = gridVisible ? 'block' : 'none';
+  gridBtn.textContent = gridVisible ? '⊞ Grid: On' : '⊞ Grid: Off';
+  gridBtn.classList.toggle('active', gridVisible);
+  if (gridVisible) drawGrid();
+});
+window.addEventListener('resize', () => { if (gridVisible) drawGrid(); });
 
 // Update FPS display when slider changes
 fpsSlider.addEventListener('input', (e) => {
@@ -280,6 +333,9 @@ async function startCamera() {
   }
 
 function captureAndSend() {
+    // Don't send new frames while frozen
+    if (isFrozen) return;
+
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       statusEl.textContent = 'WS not connected - Check connection!';
       return;

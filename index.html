@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Image Color Analyzer</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" type="image" href="images/2675.png">
 </head>
 <body>
     <div class="container">
@@ -67,7 +66,14 @@
                             </div>
                         </div>
                         <button class="pin-color-btn" id="pinColorBtn">📌 Pin Color (P)</button>
-                        <p class="instruction">Hover and click on the image to pick colors</p>
+                        <p class="instruction">Click to pick · Shift+drag to sample region · P to pin</p>
+                    </div>
+
+                    <div class="color-history-section">
+                        <h3>Color History</h3>
+                        <div class="color-history-strip" id="colorHistoryStrip">
+                            <p class="history-placeholder">Colors appear here as you pick</p>
+                        </div>
                     </div>
                     
                     <div class="pinned-colors-section" id="pinnedColorsSection">
@@ -86,6 +92,13 @@
                         <button id="analyzeBtn" class="analyze-button">Analyze Image Colors</button>
                         <p class="analyzer-info">Extract and analyze the dominant colors in your image</p>
                     </div>
+
+                    <div class="analyzer-controls" style="margin-top: 12px;">
+                        <button id="colorScriptBtn" class="analyze-button" style="background: #764ba2;">🎬 Color Script</button>
+                        <p class="analyzer-info">Average color of each image zone — used by film colorists & concept artists</p>
+                    </div>
+
+                    <div id="colorScriptDisplay" style="margin-top: 12px;"></div>
                     
                     <div class="gradient-columns">
                         <div class="gradient-column">
@@ -138,7 +151,7 @@
                     </div>
                     
                     <div class="feedback-section">
-                        <h4>Color Temperature Analysis</h4>
+                        <h4>Color Temperature</h4>
                         <div id="temperatureAnalysis" class="feedback-card">
                             <div class="temperature-indicator">
                                 <div class="temp-bar" id="tempBar"></div>
@@ -147,7 +160,8 @@
                                     <span>🔥 Warm</span>
                                 </div>
                             </div>
-                            <p class="feedback-text" id="temperatureText">Upload an image to analyze color temperature</p>
+                            <div id="tempSwatchRow" style="display:flex; gap:3px; margin:8px 0 6px; height:10px;"></div>
+                            <div id="temperatureText" class="feedback-text">Upload an image to analyze color temperature</div>
                         </div>
                     </div>
                     
@@ -264,5 +278,4 @@
 
     <script src="script.js"></script>
 </body>
-
 </html>

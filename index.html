@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Color Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="image-container">
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="imageUpload" accept="image/*" hidden>
+                <div class="upload-content">
+                    <span class="upload-icon">📷</span>
+                    <p>Click to upload, drag & drop, or press Ctrl+V to paste an image</p>
+                </div>
+            </div>
+            <div class="canvas-wrapper" id="canvasWrapper">
+                <div class="image-controls">
+                    <button class="control-btn" id="swapImageBtn" title="Change image">🔄</button>
+                    <button class="control-btn" id="resetViewBtn" title="Reset View">⟲</button>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="imageCanvas"></canvas>
+                    <div id="colorCursor" class="color-cursor">
+                        <div class="cursor-crosshair"></div>
+                        <div class="cursor-preview"></div>
+                    </div>
+                    <div id="selectedColorMarker" class="selected-color-marker" style="display: none;"></div>
+                    <div id="analysisOverlay" class="analysis-overlay" hidden></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="side-menu">
+            <div class="tabs">
+                <button class="tab-button active" data-tab="color-picking">Color Picking</button>
+                <button class="tab-button" data-tab="analyzer">Analyzer</button>
+                <button class="tab-button" data-tab="palette">Palette</button>
+                <button class="tab-button" data-tab="live-feedback">Live Feedback</button>
+                <button class="tab-button" data-tab="filters">Filters</button>
+            </div>
+            
+            <div class="tab-content">
+                <div id="color-picking" class="tab-pane active">
+                    <div class="color-info">
+                        <h3>Selected Color</h3>
+                        <div class="color-preview" id="colorPreview"></div>
+                        <div class="color-values">
+                            <div class="color-value">
+                                <label>RGB:</label>
+                                <span id="rgbValue" class="copyable-color">-</span>
+                            </div>
+                            <div class="color-value">
+                                <label>HEX:</label>
+                                <span id="hexValue" class="copyable-color">-</span>
+                            </div>
+                            <div class="color-value">
+                                <label>HSL:</label>
+                                <span id="hslValue" class="copyable-color">-</span>
+                            </div>
+                            <div class="color-value">
+                                <label>HSV:</label>
+                                <span id="hsvValue" class="copyable-color">-</span>
+                            </div>
+                        </div>
+                        <button class="pin-color-btn" id="pinColorBtn">📌 Pin Color (P)</button>
+                        <p class="instruction">Hover and click on the image to pick colors</p>
+                    </div>
+                    
+                    <div class="pinned-colors-section" id="pinnedColorsSection">
+                        <div class="section-header">
+                            <h3>Pinned Colors</h3>
+                            <button class="clear-all-btn" id="clearAllBtn" style="display: none;">Clear All</button>
+                        </div>
+                        <div class="pinned-colors-list" id="pinnedColorsList">
+                            <p class="placeholder">No pinned colors yet</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="analyzer" class="tab-pane">
+                    <div class="analyzer-controls">
+                        <button id="analyzeBtn" class="analyze-button">Analyze Image Colors</button>
+                        <p class="analyzer-info">Extract and analyze the dominant colors in your image</p>
+                    </div>
+                    
+                    <div class="gradient-columns">
+                        <div class="gradient-column">
+                            <h4>Value</h4>
+                            <div class="gradient-stack" id="valueGradient" data-category="value"></div>
+                        </div>
+                        
+                        <div class="gradient-column">
+                            <h4>Saturation</h4>
+                            <div class="gradient-stack" id="saturationGradient" data-category="saturation"></div>
+                        </div>
+                        
+                        <div class="gradient-column">
+                            <h4>Hue</h4>
+                            <div class="gradient-stack" id="hueGradient" data-category="hue"></div>
+                        </div>
+                        
+                        <div class="gradient-column">
+                            <h4>Frequency</h4>
+                            <div class="gradient-stack" id="frequencyGradient" data-category="frequency"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="palette" class="tab-pane">
+                    <div class="palette-controls">
+                        <button id="generatePaletteBtn" class="analyze-button">Generate Color Palette</button>
+                        <p class="analyzer-info">Create a harmonious color palette from your image</p>
+                    </div>
+                    <div class="palette-display" id="paletteDisplay">
+                        <p class="placeholder">Generate a palette to see color schemes</p>
+                    </div>
+                </div>
+                
+                <div id="live-feedback" class="tab-pane">
+                    <div class="live-feedback-header">
+                        <h3>🎨 Live Color Feedback</h3>
+                        <p class="analyzer-info">Real-time analysis and suggestions for your color work</p>
+                        
+                        <div class="mode-selector">
+                            <button class="mode-btn active" data-mode="design">
+                                <span class="mode-icon">💼</span>
+                                <span class="mode-label">Design Mode</span>
+                            </button>
+                            <button class="mode-btn" data-mode="art">
+                                <span class="mode-icon">🎨</span>
+                                <span class="mode-label">Art Mode</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="feedback-section">
+                        <h4>Color Temperature Analysis</h4>
+                        <div id="temperatureAnalysis" class="feedback-card">
+                            <div class="temperature-indicator">
+                                <div class="temp-bar" id="tempBar"></div>
+                                <div class="temp-labels">
+                                    <span>❄️ Cool</span>
+                                    <span>🔥 Warm</span>
+                                </div>
+                            </div>
+                            <p class="feedback-text" id="temperatureText">Upload an image to analyze color temperature</p>
+                        </div>
+                    </div>
+                    
+                    <div class="feedback-section">
+                        <h4>Contrast & Accessibility</h4>
+                        <div id="contrastAnalysis" class="feedback-card">
+                            <div class="contrast-grid" id="contrastGrid">
+                                <p class="placeholder">Analyze image to check contrast ratios</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="feedback-section">
+                        <h4>Harmony Suggestions</h4>
+                        <div id="harmonySuggestions" class="feedback-card">
+                            <div id="harmonyContent">
+                                <p class="placeholder">Pick or analyze colors to get harmony suggestions</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="feedback-section">
+                        <h4>Color Psychology</h4>
+                        <div id="psychologyAnalysis" class="feedback-card">
+                            <div id="psychologyContent">
+                                <p class="placeholder">Analyze colors to see psychological impact</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="filters" class="tab-pane">
+                    <div class="filters-header">
+                        <h3>🎭 Color Filters & Overlays</h3>
+                        <p class="analyzer-info">Apply filters to analyze values and color relationships</p>
+                    </div>
+                    
+                    <div class="filter-controls">
+                        <div class="filter-section">
+                            <h4>Value Studies</h4>
+                            <div class="filter-buttons">
+                                <button class="filter-btn" data-filter="grayscale">
+                                    <span class="filter-preview grayscale-preview"></span>
+                                    Grayscale
+                                </button>
+                                <button class="filter-btn" data-filter="highcontrast">
+                                    <span class="filter-preview highcontrast-preview"></span>
+                                    High Contrast
+                                </button>
+                                <button class="filter-btn" data-filter="values">
+                                    <span class="filter-preview values-preview"></span>
+                                    Value Zones
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="filter-section">
+                            <h4>Color Analysis</h4>
+                            <div class="filter-buttons">
+                                <button class="filter-btn" data-filter="hue">
+                                    <span class="filter-preview hue-preview"></span>
+                                    Hue Only
+                                </button>
+                                <button class="filter-btn" data-filter="saturation">
+                                    <span class="filter-preview saturation-preview"></span>
+                                    Saturation
+                                </button>
+                                <button class="filter-btn" data-filter="temperature">
+                                    <span class="filter-preview temperature-preview"></span>
+                                    Temperature
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="filter-section">
+                            <h4>Color Overlays</h4>
+                            <div class="filter-buttons">
+                                <button class="filter-btn" data-filter="red">
+                                    <span class="filter-preview" style="background: #ff6b6b;"></span>
+                                    Red Overlay
+                                </button>
+                                <button class="filter-btn" data-filter="blue">
+                                    <span class="filter-preview" style="background: #4dabf7;"></span>
+                                    Blue Overlay
+                                </button>
+                                <button class="filter-btn" data-filter="green">
+                                    <span class="filter-preview" style="background: #51cf66;"></span>
+                                    Green Overlay
+                                </button>
+                                <button class="filter-btn" data-filter="yellow">
+                                    <span class="filter-preview" style="background: #ffd43b;"></span>
+                                    Yellow Overlay
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="filter-controls-bottom">
+                            <div class="opacity-control">
+                                <label for="filterOpacity">Overlay Strength</label>
+                                <input type="range" id="filterOpacity" min="0" max="100" value="50">
+                                <span id="opacityValue">50%</span>
+                            </div>
+                            <button class="reset-filter-btn" id="resetFilterBtn">Reset to Original</button>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-info-box">
+                        <p class="info-text">💡 <strong>Tip:</strong> Use grayscale to check if your artwork has good value contrast. Click on the filtered image to pick colors!</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

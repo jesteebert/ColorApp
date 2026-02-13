@@ -1,0 +1,369 @@
+<!-- phone.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Camera Sender</title>
+  <style>
+    body { font-family: sans-serif; display:flex; flex-direction:column; gap:12px; align-items:center; padding:12px; }
+    video { width: 100%; max-width:420px; border-radius:8px; background:#000; transition: filter 0.1s ease; }    button { padding:10px 14px; border-radius:8px; border:none; background:#667eea; color:#fff; font-weight:600; }
+    .camera-controls { display:flex; gap:8px; width:100%; max-width:420px; justify-content:center; margin-top:8px; }
+.control-button { padding:8px 12px; border-radius:6px; border:none; background:#764ba2; color:#fff; font-weight:600; font-size:13px; flex:1; }
+.control-button.active { background:#28a745; }
+video.focus-animation { animation: focusPulse 0.3s ease; }
+@keyframes focusPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.98); }
+}
+    .controls { display:flex; gap:8px; width:100%; max-width:420px; justify-content:center; }
+    input[type=checkbox]{ transform:scale(1.2); margin-right:6px; }
+    .status { font-size:13px; color:#333; }
+  </style>
+</head>
+<body>
+  <h2>Phone → Computer: Camera Sender</h2>
+  <video id="video" autoplay playsinline></video>
+<div class="controls">
+    <button id="snapBtn">📸 Snap & Send</button>
+    <button id="startAutoBtn">▶️ Start Auto</button>
+    <button id="stopAutoBtn" disabled>⏹️ Stop Auto</button>
+  </div>
+
+  <!-- New Camera Controls -->
+  <div class="camera-controls">
+    <button id="switchCameraBtn" class="control-button">🔄 Switch Camera</button>
+    <button id="flashBtn" class="control-button">💡 Flash: Off</button>
+  </div>
+
+  <div style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+    <label><input type="checkbox" id="lowQualityCheckbox<div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
+<div style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
+    <label><input type="checkbox" id="lowQuality">Low quality (smaller images)</label>
+    
+    <div style="display:flex; flex-direction:column; gap:4px;">
+      <label style="font-size:13px; font-weight:600;">Auto Send FPS:</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="range" id="fpsSlider" min="0.5" max="5" step="0.5" value="1" style="flex:1;">
+        <span id="fpsValue" style="font-weight:700; min-width:60px;">1 fps</span>
+      </div>
+    </div>
+
+    <!-- Zoom Control -->
+    <div style="display:flex; flex-direction:column; gap:4px;">
+      <label style="font-size:13px; font-weight:600;">🔍 Zoom:</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1" style="flex:1;">
+        <span id="zoomValue" style="font-weight:700; min-width:60px;">1.0x</span>
+      </div>
+    </div>
+
+    <!-- Exposure Control -->
+    <div style="display:flex; flex-direction:column; gap:4px;">
+      <label style="font-size:13px; font-weight:600;">☀️ Exposure:</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="range" id="exposureSlider" min="-3" max="3" step="0.5" value="0" style="flex:1;">
+        <span id="exposureValue" style="font-weight:700; min-width:60px;">0</span>
+      </div>
+    </div>
+  </div>y">Low quality (smaller images)</label>
+  </div>
+
+  <p class="status" id="status">Not connected</p>
+
+  <script>
+  // Configure - point to the server (same host) using location origin
+  const WS_URL = (location.origin.replace(/^http/, 'ws')) + '/'; // will connect to same host/port
+
+  const video = document.getElementById('video');
+  const snapBtn = document.getElementById('snapBtn');
+  const startAutoBtn = document.getElementById('startAutoBtn');
+  const stopAutoBtn = document.getElementById('stopAutoBtn');
+  const statusEl = document.getElementById('status');
+  const lowQualityCheckbox = document.getElementById('lowQuality');
+  const fpsSlider = document.getElementById('fpsSlider');
+const fpsValue = document.getElementById('fpsValue');
+const switchCameraBtn = document.getElementById('switchCameraBtn');
+const flashBtn = document.getElementById('flashBtn');
+const zoomSlider = document.getElementById('zoomSlider');
+const zoomValue = document.getElementById('zoomValue');
+const exposureSlider = document.getElementById('exposureSlider');
+const exposureValue = document.getElementById('exposureValue');
+
+// Update FPS display when slider changes
+fpsSlider.addEventListener('input', (e) => {
+  currentFPS = parseFloat(e.target.value);
+  fpsValue.textContent = currentFPS + ' fps';
+  
+  // If auto is running, restart it with new FPS
+  if (autoInterval) {
+    clearInterval(autoInterval);
+    autoInterval = setInterval(captureAndSend, 1000 / currentFPS);
+    statusEl.textContent = `Auto sending (${currentFPS} fps)`;
+  }
+});
+// Switch Camera
+switchCameraBtn.addEventListener('click', async () => {
+  currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+  
+  // Stop current stream
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+  
+  // Restart camera with new facing mode
+  await startCamera();
+  switchCameraBtn.textContent = currentFacingMode === 'environment' ? '🔄 Back Cam' : '🔄 Front Cam';
+});
+
+// Flash/Torch Toggle
+flashBtn.addEventListener('click', async () => {
+  if (!videoTrack) return;
+  
+  flashEnabled = !flashEnabled;
+  
+  try {
+    await videoTrack.applyConstraints({
+      advanced: [{ torch: flashEnabled }]
+    });
+    flashBtn.textContent = flashEnabled ? '💡 Flash: On' : '💡 Flash: Off';
+    flashBtn.classList.toggle('active', flashEnabled);
+  } catch (err) {
+    console.error('Flash error:', err);
+    statusEl.textContent = 'Flash not supported';
+  }
+});
+
+// Zoom Control
+zoomSlider.addEventListener('input', async (e) => {
+  if (!videoTrack) return;
+  
+  currentZoom = parseFloat(e.target.value);
+  zoomValue.textContent = currentZoom.toFixed(1) + 'x';
+  
+  try {
+    await videoTrack.applyConstraints({
+      advanced: [{ zoom: currentZoom }]
+    });
+  } catch (err) {
+    console.error('Zoom error:', err);
+  }
+});
+
+// Exposure Control
+exposureSlider.addEventListener('input', async (e) => {
+  if (!videoTrack) return;
+  
+  const exposureVal = parseFloat(e.target.value);
+  exposureValue.textContent = exposureVal > 0 ? '+' + exposureVal : exposureVal;
+  
+  try {
+    await videoTrack.applyConstraints({
+      advanced: [{ exposureCompensation: exposureVal }]
+    });
+  } catch (err) {
+    console.error('Exposure error:', err);
+  }
+});
+
+// Tap to Focus
+video.addEventListener('click', async (e) => {
+  if (!videoTrack) return;
+  
+  const capabilities = videoTrack.getCapabilities();
+  if (!capabilities.focusMode || !capabilities.focusMode.includes('manual')) {
+    return; // Focus not supported
+  }
+
+  // Get tap position relative to video
+  const rect = video.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+
+  try {
+    await videoTrack.applyConstraints({
+      advanced: [{
+        focusMode: 'manual',
+        focusDistance: 0.5 // You can calculate based on x, y if needed
+      }]
+    });
+
+    // Visual feedback
+    video.classList.add('focus-animation');
+    setTimeout(() => video.classList.remove('focus-animation'), 300);
+    
+    statusEl.textContent = `Focused at (${Math.round(x*100)}%, ${Math.round(y*100)}%)`;
+    setTimeout(() => statusEl.textContent = 'Camera active', 2000);
+    
+  } catch (err) {
+    console.error('Focus error:', err);
+  }
+});
+
+let ws;
+let stream;
+let autoInterval;
+let currentFPS = 1;
+let currentFacingMode = 'environment'; // 'environment' = back camera, 'user' = front camera
+let flashEnabled = false;
+let currentZoom = 1;
+let videoTrack = null;
+
+  function connectWS() {
+    ws = new WebSocket(WS_URL);
+    ws.addEventListener('open', () => {
+      statusEl.textContent = 'WebSocket connected';
+      // identify as phone
+      ws.send(JSON.stringify({ type: 'introduce', role: 'phone' }));
+    });
+    ws.addEventListener('close', () => statusEl.textContent = 'Disconnected');
+    ws.addEventListener('error', (e) => statusEl.textContent = 'WS error');
+    ws.addEventListener('message', (m) => {
+      // could add commands from server in future
+    });
+  }
+
+async function startCamera() {
+    try {
+      const constraints = {
+        video: {
+          facingMode: currentFacingMode,
+          zoom: true // Request zoom capability
+        },
+        audio: false
+      };
+
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      videoTrack = stream.getVideoTracks()[0];
+      
+      await video.play();
+      statusEl.textContent = 'Camera active';
+
+      // Check available capabilities
+      const capabilities = videoTrack.getCapabilities();
+      
+      // Setup zoom if supported
+      if (capabilities.zoom) {
+        zoomSlider.min = capabilities.zoom.min;
+        zoomSlider.max = capabilities.zoom.max;
+        zoomSlider.step = capabilities.zoom.step || 0.1;
+        zoomSlider.disabled = false;
+      } else {
+        zoomSlider.disabled = true;
+        zoomValue.textContent = 'N/A';
+      }
+
+      // Setup exposure if supported
+      if (capabilities.exposureCompensation) {
+        exposureSlider.min = capabilities.exposureCompensation.min;
+        exposureSlider.max = capabilities.exposureCompensation.max;
+        exposureSlider.step = capabilities.exposureCompensation.step || 0.5;
+        exposureSlider.disabled = false;
+      } else {
+        exposureSlider.disabled = true;
+        exposureValue.textContent = 'N/A';
+      }
+
+      // Check flash/torch support
+      if (capabilities.torch) {
+        flashBtn.disabled = false;
+      } else {
+        flashBtn.disabled = true;
+        flashBtn.textContent = '💡 Flash: N/A';
+      }
+
+    } catch (err) {
+      statusEl.textContent = 'Camera error: ' + err.message;
+      console.error(err);
+    }
+  }
+
+function captureAndSend() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      statusEl.textContent = 'WS not connected - Check connection!';
+      return;
+    }
+    
+    // Check if video is actually playing
+    if (!stream || video.videoWidth === 0 || video.videoHeight === 0) {
+      statusEl.textContent = 'Camera not ready yet';
+      return;
+    }
+    
+    // Add camera flash effect
+    video.style.filter = 'brightness(1.5)';
+    setTimeout(() => {
+      video.style.filter = 'brightness(1)';
+    }, 100);
+    
+    const canvas = document.createElement('canvas');
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    const scale = lowQualityCheckbox.checked ? 0.5 : 0.9;
+    canvas.width = Math.max(100, Math.round(w * scale));
+    canvas.height = Math.max(100, Math.round(h * scale));
+    const ctx = canvas.getContext('2d');
+    
+    // Draw the current video frame (video keeps playing)
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Convert to base64 JPEG
+    canvas.toBlob(blob => {
+      if (!blob) {
+        statusEl.textContent = 'Failed to capture image';
+        return;
+      }
+      
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result;
+        
+        try {
+          ws.send(JSON.stringify({ type: 'frame', image: base64 }));
+          statusEl.textContent = '✓ Sent at ' + new Date().toLocaleTimeString();
+          statusEl.style.color = '#28a745';
+          
+          // Reset status color after 2 seconds
+          setTimeout(() => {
+            statusEl.style.color = '#333';
+          }, 2000);
+          
+        } catch (err) {
+          statusEl.textContent = 'Send failed: ' + err.message;
+          statusEl.style.color = '#dc3545';
+        }
+      };
+      
+      reader.onerror = () => {
+        statusEl.textContent = 'Failed to read image data';
+        statusEl.style.color = '#dc3545';
+      };
+      
+      reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.75);
+  }
+
+  snapBtn.addEventListener('click', captureAndSend);
+startAutoBtn.addEventListener('click', () => {
+    if (autoInterval) return;
+    const interval = 1000 / currentFPS; // Convert FPS to milliseconds
+    autoInterval = setInterval(captureAndSend, interval);
+    startAutoBtn.disabled = true;
+    stopAutoBtn.disabled = false;
+    statusEl.textContent = `Auto sending (${currentFPS} fps)`;
+  });
+  stopAutoBtn.addEventListener('click', () => {
+    clearInterval(autoInterval);
+    autoInterval = null;
+    startAutoBtn.disabled = false;
+    stopAutoBtn.disabled = true;
+    statusEl.textContent = 'Auto stopped';
+  });
+
+  // init
+  connectWS();
+  startCamera();
+  </script>
+</body>
+</html>

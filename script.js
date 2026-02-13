@@ -30,8 +30,33 @@ class ColorAnalyzer {
         this.activeFilter = null;
         this.filterOpacity = 0.5;
         this.originalImageData = null;
-        
+
+        // Color history (last 10 picked colors)
+        this.colorHistory = [];
+
+        // Color script state
+        this.colorScriptActive = false;
+        this.colorScriptZones  = null;
+
+        // Region sampler state
+        this.isSampling = false;
+        this.sampleStart = null;
+        this.sampleOverlay = null;
+
+        // Loupe
+        this.loupeCanvas = null;
+        this.loupeCtx = null;
+
         this.initEventListeners();
+        this.initLoupe();
+        this.initSampleOverlay();
+
+        // Reposition color script overlay on resize
+        window.addEventListener('resize', () => {
+            if (!this.colorScriptActive) return;
+            const overlay = document.getElementById('colorScriptOverlay');
+            if (overlay) this.positionScriptOverlay(overlay);
+        });
     }
     
     initEventListeners() {
@@ -79,9 +104,20 @@ class ColorAnalyzer {
         this.canvas.addEventListener('mousemove', (e) => this.handleCanvasHover(e));
         this.canvas.addEventListener('mouseleave', () => this.handleCanvasLeave());
         this.canvas.addEventListener('click', (e) => this.handleCanvasClick(e));
+
+        // Region sampler (Shift+drag)
+        this.canvas.addEventListener('mousedown', (e) => this.handleSampleStart(e));
+        this.canvas.addEventListener('mousemove', (e) => this.handleSampleMove(e));
+        this.canvas.addEventListener('mouseup',   (e) => this.handleSampleEnd(e));
         
         // Analyze button
         this.analyzeBtn.addEventListener('click', () => this.analyzeImage());
+
+        // Color Script button
+        const colorScriptBtn = document.getElementById('colorScriptBtn');
+        if (colorScriptBtn) {
+            colorScriptBtn.addEventListener('click', () => this.generateColorScript());
+        }
         
         // Generate palette button
         this.generatePaletteBtn.addEventListener('click', () => this.generatePalette());
@@ -160,7 +196,7 @@ class ColorAnalyzer {
             if (file.type.startsWith('image/')) {
                 this.loadImageFromFile(file);
             } else {
-                alert('Please drop a valid image file.');
+                this.showNotification('Please drop a valid image file.', 'warning');
             }
         }
     }
@@ -225,7 +261,7 @@ class ColorAnalyzer {
         if (!file) return;
         
         if (!file.type.startsWith('image/')) {
-            alert('Please upload a valid image file.');
+            this.showNotification('Please upload a valid image file.', 'warning');
             return;
         }
         
@@ -242,16 +278,99 @@ class ColorAnalyzer {
                 this.canvasWrapper.style.display = 'flex';
                 this.clearAnalysis();
                 this.updateLiveFeedback();
+                this.showAutoAnalyzePrompt();
             };
             img.onerror = () => {
-                alert('Failed to load image. Please try another image.');
+                this.showNotification('Failed to load image. Please try another.', 'error');
             };
             img.src = e.target.result;
         };
         reader.onerror = () => {
-            alert('Failed to read file. Please try again.');
+            this.showNotification('Failed to read file. Please try again.', 'error');
         };
         reader.readAsDataURL(file);
+    }
+
+    showAutoAnalyzePrompt() {
+        // Remove any existing prompt
+        const existing = document.getElementById('auto-analyze-prompt');
+        if (existing) existing.remove();
+
+        const prompt = document.createElement('div');
+        prompt.id = 'auto-analyze-prompt';
+        prompt.style.cssText = `
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #1e293b;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 500;
+            z-index: 10001;
+            opacity: 0;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            white-space: nowrap;
+        `;
+
+        prompt.innerHTML = `
+            <span>Auto analyze colors?</span>
+            <button id="autoAnalyzeYes" style="
+                padding: 6px 14px;
+                background: #667eea;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 700;
+                cursor: pointer;
+            ">Yes</button>
+            <button id="autoAnalyzeNo" style="
+                padding: 6px 10px;
+                background: transparent;
+                color: rgba(255,255,255,0.6);
+                border: 1px solid rgba(255,255,255,0.2);
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+            ">Skip</button>
+        `;
+
+        document.body.appendChild(prompt);
+
+        // Animate in
+        requestAnimationFrame(() => {
+            prompt.style.opacity = '1';
+            prompt.style.transform = 'translateX(-50%) translateY(0)';
+        });
+
+        const dismiss = () => {
+            prompt.style.opacity = '0';
+            prompt.style.transform = 'translateX(-50%) translateY(20px)';
+            setTimeout(() => prompt.remove(), 300);
+        };
+
+        document.getElementById('autoAnalyzeYes').addEventListener('click', () => {
+            dismiss();
+            // Switch to analyzer tab and run
+            this.switchTab('analyzer');
+            document.querySelectorAll('.tab-button').forEach(b =>
+                b.classList.toggle('active', b.dataset.tab === 'analyzer')
+            );
+            setTimeout(() => this.analyzeImage(), 50);
+        });
+
+        document.getElementById('autoAnalyzeNo').addEventListener('click', dismiss);
+
+        // Auto-dismiss after 6 seconds
+        setTimeout(dismiss, 6000);
     }
     
     displayImage(img) {
@@ -301,6 +420,8 @@ class ColorAnalyzer {
             const pixelData = this.ctx.getImageData(x, y, 1, 1).data;
             const hex = this.rgbToHex(pixelData[0], pixelData[1], pixelData[2]);
             this.cursorPreview.style.backgroundColor = hex;
+
+            this.updateLoupe(x, y, e.clientX, e.clientY);
             
             this.hoverColor = {
                 rgb: { r: pixelData[0], g: pixelData[1], b: pixelData[2] },
@@ -311,6 +432,7 @@ class ColorAnalyzer {
     
     handleCanvasLeave() {
         this.colorCursor.classList.remove('active');
+        if (this.loupeCanvas) this.loupeCanvas.style.display = 'none';
     }
     
     handleCanvasClick(e) {
@@ -335,6 +457,7 @@ class ColorAnalyzer {
             
             this.currentColor = { rgb, hex, hsl, hsv };
             this.updateColorInfo(rgb, hex, hsl, hsv);
+            this.addToColorHistory({ rgb, hex, hsl, hsv });
             
             this.selectedColorMarker.style.display = 'block';
             this.selectedColorMarker.style.left = e.clientX + 'px';
@@ -364,19 +487,20 @@ class ColorAnalyzer {
     
     pinCurrentColor() {
         if (!this.currentColor) {
-            alert('Please pick a color first!');
+            this.showNotification('Pick a color first!', 'warning');
             return;
         }
         
         const alreadyPinned = this.pinnedColors.some(c => c.hex === this.currentColor.hex);
         if (alreadyPinned) {
-            alert('This color is already pinned!');
+            this.showNotification('This color is already pinned!', 'warning');
             return;
         }
         
         this.pinnedColors.push({...this.currentColor});
         this.updatePinnedColorsList();
         this.updateLiveFeedback();
+        this.showNotification(`Pinned ${this.currentColor.hex}`, 'success');
     }
     
     updatePinnedColorsList() {
@@ -417,16 +541,16 @@ class ColorAnalyzer {
     }
     
     clearAllPinnedColors() {
-        if (confirm('Clear all pinned colors?')) {
-            this.pinnedColors = [];
-            this.updatePinnedColorsList();
-            this.updateLiveFeedback();
-        }
+        if (this.pinnedColors.length === 0) return;
+        this.pinnedColors = [];
+        this.updatePinnedColorsList();
+        this.updateLiveFeedback();
+        this.showNotification('All pinned colors cleared', 'success');
     }
     
     analyzeImage() {
         if (!this.currentImageData) {
-            alert('Please upload an image first!');
+            this.showNotification('Please upload an image first!', 'warning');
             return;
         }
         
@@ -543,14 +667,18 @@ class ColorAnalyzer {
     
     displayGradientStack(category, sortedColors) {
         const stackElement = document.getElementById(category + 'Gradient');
-        stackElement.innerHTML = '';
+        
+        // Clone to remove any previously attached click listeners before re-adding
+        const fresh = stackElement.cloneNode(false);
+        stackElement.parentNode.replaceChild(fresh, stackElement);
+        fresh.id = category + 'Gradient';
         
         if (sortedColors.length === 0) {
-            stackElement.innerHTML = '<p class="placeholder">No colors analyzed yet</p>';
+            fresh.innerHTML = '<p class="placeholder">No colors analyzed yet</p>';
             return;
         }
         
-        stackElement.addEventListener('click', () => {
+        fresh.addEventListener('click', () => {
             this.toggleCategoryOverlay(category, sortedColors);
         });
         
@@ -564,18 +692,10 @@ class ColorAnalyzer {
             
             let displayValue = '';
             switch(category) {
-                case 'value':
-                    displayValue = `${color.hsv.v}%`;
-                    break;
-                case 'saturation':
-                    displayValue = `${color.hsl.s}%`;
-                    break;
-                case 'hue':
-                    displayValue = `${color.hsl.h}°`;
-                    break;
-                case 'frequency':
-                    displayValue = `${color.percentage}%`;
-                    break;
+                case 'value':      displayValue = `${color.hsv.v}%`; break;
+                case 'saturation': displayValue = `${color.hsl.s}%`; break;
+                case 'hue':        displayValue = `${color.hsl.h}°`; break;
+                case 'frequency':  displayValue = `${color.percentage}%`; break;
             }
             
             bar.innerHTML = `
@@ -585,7 +705,7 @@ class ColorAnalyzer {
                 </div>
             `;
             
-            stackElement.appendChild(bar);
+            fresh.appendChild(bar);
         });
     }
     
@@ -672,28 +792,28 @@ class ColorAnalyzer {
         const width = imageData.width;
         const height = imageData.height;
         
-        const gridSize = 20;
-        const attempts = Math.min(200, (width * height) / (gridSize * gridSize));
+        // Deterministic grid scan — consistent positions every time
+        const gridSize = Math.max(1, Math.floor(Math.sqrt((width * height) / 300)));
         
-        for (let attempt = 0; attempt < attempts && positions.length < maxPositions; attempt++) {
-            const gridX = Math.floor(Math.random() * Math.floor(width / gridSize)) * gridSize;
-            const gridY = Math.floor(Math.random() * Math.floor(height / gridSize)) * gridSize;
-            
-            for (let dy = 0; dy < gridSize && positions.length < maxPositions; dy += 5) {
-                for (let dx = 0; dx < gridSize && positions.length < maxPositions; dx += 5) {
-                    const x = Math.min(gridX + dx, width - 1);
-                    const y = Math.min(gridY + dy, height - 1);
-                    const index = (y * width + x) * 4;
-                    
-                    const r = data[index];
-                    const g = data[index + 1];
-                    const b = data[index + 2];
-                    
-                    const quantized = this.quantizeColor(r, g, b, 20);
-                    const hex = this.rgbToHex(quantized.r, quantized.g, quantized.b);
-                    
-                    if (hex === targetHex) {
+        outer:
+        for (let y = 0; y < height; y += gridSize) {
+            for (let x = 0; x < width; x += gridSize) {
+                const index = (y * width + x) * 4;
+                const r = data[index];
+                const g = data[index + 1];
+                const b = data[index + 2];
+                
+                const quantized = this.quantizeColor(r, g, b, 20);
+                const hex = this.rgbToHex(quantized.r, quantized.g, quantized.b);
+                
+                if (hex === targetHex) {
+                    const tooClose = positions.some(p => {
+                        const dist = Math.sqrt(Math.pow(p.x - x, 2) + Math.pow(p.y - y, 2));
+                        return dist < 50;
+                    });
+                    if (!tooClose) {
                         positions.push({ x, y });
+                        if (positions.length >= maxPositions) break outer;
                     }
                 }
             }
@@ -714,7 +834,7 @@ class ColorAnalyzer {
     
     generatePalette() {
         if (!this.currentImageData) {
-            alert('Please upload an image first!');
+            this.showNotification('Please upload an image first!', 'warning');
             return;
         }
         
@@ -805,6 +925,41 @@ class ColorAnalyzer {
         return colors;
     }
     
+    // Helper: returns colors to analyze based on priority: colorData > pinnedColors > currentColor
+    // Filters out near-black/near-white for small limits so analysis isn't dominated by dark fills
+    getColorsToAnalyze(limit = 5) {
+        let pool = [];
+        if (this.colorData.length > 0)      pool = this.colorData;
+        else if (this.pinnedColors.length > 0) pool = this.pinnedColors;
+        else if (this.currentColor)            return [this.currentColor];
+        else return [];
+
+        if (limit <= 5) {
+            // Try to return interesting colors first; fall back to raw if not enough
+            const interesting = pool.filter(c => {
+                const hsl = c.hsl || this.rgbToHsl(c.rgb.r, c.rgb.g, c.rgb.b);
+                return hsl.l > 8 && hsl.l < 92 && hsl.s > 5;
+            });
+            if (interesting.length >= Math.min(limit, 2)) {
+                return interesting.slice(0, limit);
+            }
+        }
+        return pool.slice(0, limit);
+    }
+
+    // Helper: returns the most visually interesting (saturated, non-trivial) color from a list
+    getMostInterestingColor(colors) {
+        if (!colors || colors.length === 0) return null;
+        // Score = saturation * (1 - abs(lightness - 50)/50) — penalizes very dark/light
+        const scored = colors.map(c => {
+            const hsl = c.hsl || this.rgbToHsl(c.rgb.r, c.rgb.g, c.rgb.b);
+            const score = hsl.s * (1 - Math.abs(hsl.l - 50) / 50);
+            return { color: c, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        return scored[0].color;
+    }
+
     // Live Feedback Functions
     switchMode(mode) {
         this.feedbackMode = mode;
@@ -868,40 +1023,56 @@ class ColorAnalyzer {
             document.getElementById('temperatureText').textContent = 'Upload an image to analyze color temperature';
             return;
         }
-        
-        let colorsToAnalyze = [];
-        if (this.colorData.length > 0) {
-            colorsToAnalyze = this.colorData.slice(0, 10);
-        } else if (this.currentColor) {
-            colorsToAnalyze = [this.currentColor];
-        }
-        
+
+        const colorsToAnalyze = this.getColorsToAnalyze(10);
         if (colorsToAnalyze.length === 0) return;
-        
+
         let totalTemp = 0;
         colorsToAnalyze.forEach(color => {
-            const temp = this.getColorTemperature(color.rgb || color);
-            totalTemp += temp;
+            totalTemp += this.getColorTemperature(color.rgb || color);
         });
-        
-        const avgTemp = totalTemp / colorsToAnalyze.length;
-        const tempPercentage = ((avgTemp + 100) / 200) * 100;
-        
+        const avgTemp   = totalTemp / colorsToAnalyze.length;
+        const pct       = Math.max(2, Math.min(98, ((avgTemp + 100) / 200) * 100));
+
+        // Update needle position via CSS var
         const tempBar = document.getElementById('tempBar');
-        tempBar.style.setProperty('--temp-position', `${tempPercentage}%`);
-        
-        let tempDescription = '';
-        if (avgTemp < -50) {
-            tempDescription = 'Very cool colors dominate - creates a calming, professional atmosphere. Great for corporate or serene designs.';
-        } else if (avgTemp < 0) {
-            tempDescription = 'Cool colors present - evokes trust, stability, and tranquility. Ideal for tech or healthcare applications.';
-        } else if (avgTemp < 50) {
-            tempDescription = 'Warm colors present - feels energetic, friendly, and inviting. Perfect for creative or social contexts.';
-        } else {
-            tempDescription = 'Very warm colors dominate - creates excitement, passion, and urgency. Excellent for attention-grabbing designs.';
+        tempBar.style.setProperty('--temp-position', `${pct}%`);
+
+        // Descriptive label
+        let label, emoji;
+        if (avgTemp < -50)      { label = 'Very Cool';  emoji = '🧊'; }
+        else if (avgTemp < 0)   { label = 'Cool';        emoji = '❄️'; }
+        else if (avgTemp < 50)  { label = 'Warm';        emoji = '☀️'; }
+        else                    { label = 'Very Warm';   emoji = '🔥'; }
+
+        document.getElementById('temperatureText').innerHTML = `
+            <span class="temp-badge" style="
+                display:inline-flex; align-items:center; gap:6px;
+                background: ${pct < 50
+                    ? `hsl(${220 - pct},70%,55%)`
+                    : `hsl(${30 - (pct - 50) * 0.4},85%,52%)`};
+                color:#fff; padding:4px 12px; border-radius:20px;
+                font-size:12px; font-weight:700; margin-bottom:6px;">
+                ${emoji} ${label}
+            </span>
+            <br>
+            <span style="font-size:12px; color:#64748b; line-height:1.5;">
+                ${avgTemp < -50  ? 'Very cool palette — calming, professional, serene.' :
+                  avgTemp < 0    ? 'Cool tones — trust, stability, and tranquility.' :
+                  avgTemp < 50   ? 'Warm tones — energetic, friendly, and inviting.' :
+                                   'Very warm — exciting, passionate, attention-grabbing.'}
+            </span>`;
+
+        // Show a mini swatch row of the analyzed colors
+        const swatchRow = document.getElementById('tempSwatchRow');
+        if (swatchRow) {
+            swatchRow.innerHTML = '';
+            colorsToAnalyze.slice(0, 8).forEach(c => {
+                const s = document.createElement('div');
+                s.style.cssText = `flex:1; height:10px; background:${c.hex}; border-radius:2px;`;
+                swatchRow.appendChild(s);
+            });
         }
-        
-        document.getElementById('temperatureText').textContent = tempDescription;
     }
     
     getColorTemperature(rgb) {
@@ -914,51 +1085,57 @@ class ColorAnalyzer {
     
     updateContrastAnalysis() {
         const contrastGrid = document.getElementById('contrastGrid');
-        
+
         let colorsToCheck = [];
-        if (this.colorData.length >= 2) {
-            colorsToCheck = this.colorData.slice(0, 4);
-        } else if (this.pinnedColors.length >= 2) {
-            colorsToCheck = this.pinnedColors.slice(0, 4);
-        } else if (this.currentColor && this.pinnedColors.length === 1) {
+        if (this.colorData.length >= 2)        colorsToCheck = this.colorData.slice(0, 4);
+        else if (this.pinnedColors.length >= 2) colorsToCheck = this.pinnedColors.slice(0, 4);
+        else if (this.currentColor && this.pinnedColors.length === 1)
             colorsToCheck = [this.currentColor, this.pinnedColors[0]];
-        }
-        
+
         if (colorsToCheck.length < 2) {
             contrastGrid.innerHTML = '<p class="placeholder">Need at least 2 colors to check contrast</p>';
             return;
         }
-        
+
         contrastGrid.innerHTML = '';
-        
+
         for (let i = 0; i < colorsToCheck.length - 1; i++) {
-            const color1 = colorsToCheck[i];
-            const color2 = colorsToCheck[i + 1];
-            
-            const ratio = this.getContrastRatio(color1.rgb, color2.rgb);
-            
+            const c1 = colorsToCheck[i];
+            const c2 = colorsToCheck[i + 1];
+            const ratio = this.getContrastRatio(c1.rgb, c2.rgb);
+
+            let status, statusColor, grade;
+            if (ratio >= 7)        { status = 'AAA'; statusColor = '#16a34a'; grade = 'Best'; }
+            else if (ratio >= 4.5) { status = 'AA';  statusColor = '#2563eb'; grade = 'Good'; }
+            else if (ratio >= 3)   { status = 'AA Large'; statusColor = '#d97706'; grade = 'Large text only'; }
+            else                   { status = 'Fail'; statusColor = '#dc2626'; grade = 'Insufficient'; }
+
             const pairDiv = document.createElement('div');
-            pairDiv.className = 'contrast-pair';
-            
-            let status = 'fail';
-            let statusText = 'Fails WCAG';
-            if (ratio >= 7) {
-                status = 'pass';
-                statusText = 'AAA (Best)';
-            } else if (ratio >= 4.5) {
-                status = 'aa';
-                statusText = 'AA (Good)';
-            }
-            
+            pairDiv.className = 'contrast-pair-visual';
+
+            // Live text preview on both color combos
             pairDiv.innerHTML = `
-                <div class="contrast-colors">
-                    <div class="contrast-color-box" style="background-color: ${color1.hex}"></div>
-                    <div class="contrast-color-box" style="background-color: ${color2.hex}"></div>
+                <div class="contrast-preview-row">
+                    <div class="contrast-preview-box" style="background:${c1.hex}; color:${c2.hex};">
+                        <span class="cp-text">Aa</span>
+                        <span class="cp-hex">${c1.hex}</span>
+                    </div>
+                    <div class="contrast-preview-box" style="background:${c2.hex}; color:${c1.hex};">
+                        <span class="cp-text">Aa</span>
+                        <span class="cp-hex">${c2.hex}</span>
+                    </div>
                 </div>
-                <div class="contrast-ratio">Contrast: ${ratio.toFixed(2)}:1</div>
-                <span class="contrast-status ${status}">${statusText}</span>
+                <div class="contrast-meta">
+                    <span class="contrast-ratio-num">${ratio.toFixed(2)}:1</span>
+                    <span class="contrast-badge" style="background:${statusColor}15; color:${statusColor}; border:1px solid ${statusColor}40;">
+                        ${status}
+                    </span>
+                    <span class="contrast-grade">${grade}</span>
+                </div>
+                <div class="contrast-bar-wrap">
+                    <div class="contrast-bar-fill" style="width:${Math.min(100,(ratio/21)*100)}%; background:${statusColor};"></div>
+                </div>
             `;
-            
             contrastGrid.appendChild(pairDiv);
         }
     }
@@ -987,14 +1164,15 @@ class ColorAnalyzer {
     
     updateHarmonyAnalysis() {
         const harmonyContent = document.getElementById('harmonyContent');
-        
+
         let baseColor;
         if (this.currentColor) {
             baseColor = this.currentColor;
         } else if (this.colorData.length > 0) {
-            baseColor = this.colorData[0];
+            // Prefer the most saturated color over the most frequent (which is often black)
+            baseColor = this.getMostInterestingColor(this.colorData) || this.colorData[0];
         } else if (this.pinnedColors.length > 0) {
-            baseColor = this.pinnedColors[0];
+            baseColor = this.getMostInterestingColor(this.pinnedColors) || this.pinnedColors[0];
         }
         
         if (!baseColor) {
@@ -1042,24 +1220,35 @@ class ColorAnalyzer {
     createHarmonyItem(container, label, colors) {
         const item = document.createElement('div');
         item.className = 'harmony-item';
-        
+
         const labelDiv = document.createElement('div');
         labelDiv.className = 'harmony-label';
         labelDiv.textContent = label;
-        
-        const colorsDiv = document.createElement('div');
-        colorsDiv.className = 'harmony-colors';
-        
+
+        // Large swatch strip instead of tiny dots
+        const strip = document.createElement('div');
+        strip.className = 'harmony-strip';
+
         colors.forEach(color => {
-            const dot = document.createElement('div');
-            dot.className = 'harmony-color-dot';
-            dot.style.backgroundColor = color;
-            dot.title = `${color} - Click to copy`;
-            colorsDiv.appendChild(dot);
+            const seg = document.createElement('div');
+            seg.className = 'harmony-seg';
+            seg.style.backgroundColor = color;
+            seg.title = `${color} — click to copy`;
+
+            const hexLabel = document.createElement('span');
+            hexLabel.className = 'harmony-seg-hex';
+            hexLabel.textContent = color;
+            seg.appendChild(hexLabel);
+
+            seg.addEventListener('click', () => {
+                this.copyToClipboard(color);
+                this.showNotification(`Copied ${color}`, 'success');
+            });
+            strip.appendChild(seg);
         });
-        
+
         item.appendChild(labelDiv);
-        item.appendChild(colorsDiv);
+        item.appendChild(strip);
         container.appendChild(item);
     }
     
@@ -1073,37 +1262,58 @@ class ColorAnalyzer {
     
     updateDesignPsychology() {
         const psychologyContent = document.getElementById('psychologyContent');
-        
-        let colorsToAnalyze = [];
-        if (this.colorData.length > 0) {
-            colorsToAnalyze = this.colorData.slice(0, 3);
-        } else if (this.pinnedColors.length > 0) {
-            colorsToAnalyze = this.pinnedColors.slice(0, 3);
-        } else if (this.currentColor) {
-            colorsToAnalyze = [this.currentColor];
-        }
-        
+        const colorsToAnalyze = this.getColorsToAnalyze(3);
+
         if (colorsToAnalyze.length === 0) {
             psychologyContent.innerHTML = '<p class="placeholder">Analyze colors to see psychological impact</p>';
             return;
         }
-        
+
         psychologyContent.innerHTML = '';
-        
+
         colorsToAnalyze.forEach(color => {
-            const psychology = this.getColorPsychology(color.hsl);
-            
+            const psy = this.getColorPsychology(color.hsl);
+
             const item = document.createElement('div');
-            item.className = 'psychology-item';
-            
+            item.className = 'psych-card';
+            item.style.borderLeft = `4px solid ${color.hex}`;
+
             item.innerHTML = `
-                <div class="psychology-color-sample" style="background-color: ${color.hex}"></div>
-                <div class="psychology-info">
-                    <div class="psychology-feeling">${psychology.feeling}</div>
-                    <div class="psychology-description">${psychology.description}</div>
+                <div class="psych-card-top">
+                    <div class="psych-swatch" style="background:${color.hex};"></div>
+                    <div class="psych-feeling">${psy.feeling}</div>
                 </div>
+                <div class="psych-desc">${psy.description}</div>
             `;
-            
+            psychologyContent.appendChild(item);
+        });
+    }
+
+    updateArtPsychology() {
+        const psychologyContent = document.getElementById('psychologyContent');
+        const colorsToAnalyze = this.getColorsToAnalyze(3);
+
+        if (colorsToAnalyze.length === 0) {
+            psychologyContent.innerHTML = '<p class="placeholder">Analyze colors to see artistic impact</p>';
+            return;
+        }
+
+        psychologyContent.innerHTML = '';
+
+        colorsToAnalyze.forEach(color => {
+            const impact = this.getArtisticImpact(color.hsl || this.rgbToHsl(color.rgb.r, color.rgb.g, color.rgb.b));
+
+            const item = document.createElement('div');
+            item.className = 'psych-card';
+            item.style.borderLeft = `4px solid ${color.hex}`;
+
+            item.innerHTML = `
+                <div class="psych-card-top">
+                    <div class="psych-swatch" style="background:${color.hex};"></div>
+                    <div class="psych-feeling">${impact.feeling}</div>
+                </div>
+                <div class="psych-desc">${impact.description}</div>
+            `;
             psychologyContent.appendChild(item);
         });
     }
@@ -1143,14 +1353,7 @@ class ColorAnalyzer {
     updateValueDistribution() {
         const contrastGrid = document.getElementById('contrastGrid');
         
-        let colorsToAnalyze = [];
-        if (this.colorData.length > 0) {
-            colorsToAnalyze = this.colorData.slice(0, 10);
-        } else if (this.pinnedColors.length > 0) {
-            colorsToAnalyze = this.pinnedColors;
-        } else if (this.currentColor) {
-            colorsToAnalyze = [this.currentColor];
-        }
+        const colorsToAnalyze = this.getColorsToAnalyze(10);
         
         if (colorsToAnalyze.length === 0) {
             contrastGrid.innerHTML = '<p class="placeholder">Analyze image to see value distribution</p>';
@@ -1219,14 +1422,7 @@ class ColorAnalyzer {
     updateColorMoodAnalysis() {
         const harmonyContent = document.getElementById('harmonyContent');
         
-        let colorsToAnalyze = [];
-        if (this.colorData.length > 0) {
-            colorsToAnalyze = this.colorData.slice(0, 5);
-        } else if (this.pinnedColors.length > 0) {
-            colorsToAnalyze = this.pinnedColors;
-        } else if (this.currentColor) {
-            colorsToAnalyze = [this.currentColor];
-        }
+        const colorsToAnalyze = this.getColorsToAnalyze(5);
         
         if (colorsToAnalyze.length === 0) {
             harmonyContent.innerHTML = '<p class="placeholder">Analyze colors to see mood analysis</p>';
@@ -1293,43 +1489,6 @@ class ColorAnalyzer {
         harmonyContent.appendChild(samplesDiv);
     }
     
-    updateArtPsychology() {
-        const psychologyContent = document.getElementById('psychologyContent');
-        
-        let colorsToAnalyze = [];
-        if (this.colorData.length > 0) {
-            colorsToAnalyze = this.colorData.slice(0, 3);
-        } else if (this.pinnedColors.length > 0) {
-            colorsToAnalyze = this.pinnedColors.slice(0, 3);
-        } else if (this.currentColor) {
-            colorsToAnalyze = [this.currentColor];
-        }
-        
-        if (colorsToAnalyze.length === 0) {
-            psychologyContent.innerHTML = '<p class="placeholder">Analyze colors to see artistic impact</p>';
-            return;
-        }
-        
-        psychologyContent.innerHTML = '';
-        
-        colorsToAnalyze.forEach(color => {
-            const impact = this.getArtisticImpact(color.hsl || this.rgbToHsl(color.rgb.r, color.rgb.g, color.rgb.b));
-            
-            const item = document.createElement('div');
-            item.className = 'psychology-item';
-            
-            item.innerHTML = `
-                <div class="psychology-color-sample" style="background-color: ${color.hex}"></div>
-                <div class="psychology-info">
-                    <div class="psychology-feeling">${impact.feeling}</div>
-                    <div class="psychology-description">${impact.description}</div>
-                </div>
-            `;
-            
-            psychologyContent.appendChild(item);
-        });
-    }
-    
     getArtisticImpact(hsl) {
         const h = hsl.h;
         const s = hsl.s;
@@ -1373,7 +1532,7 @@ class ColorAnalyzer {
     // Filter Functions
     applyFilter(filterType) {
         if (!this.originalImageData) {
-            alert('Please upload an image first!');
+            this.showNotification('Please upload an image first!', 'warning');
             return;
         }
         
@@ -1573,6 +1732,7 @@ class ColorAnalyzer {
     
     clearAnalysis() {
         this.colorData = [];
+        this.clearColorScript();
         
         ['value', 'saturation', 'hue', 'frequency'].forEach(category => {
             const stackElement = document.getElementById(category + 'Gradient');
@@ -1586,17 +1746,571 @@ class ColorAnalyzer {
         this.paletteDisplay.innerHTML = '<p class="placeholder">Generate a palette to see color schemes</p>';
     }
     
+    // ─── LOUPE ────────────────────────────────────────────────────────────────
+    initLoupe() {
+        this.loupeCanvas = document.createElement('canvas');
+        this.loupeCanvas.width  = 120;
+        this.loupeCanvas.height = 120;
+        this.loupeCanvas.style.cssText = `
+            position: fixed;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.3);
+            pointer-events: none;
+            z-index: 2000;
+            display: none;
+            image-rendering: pixelated;
+        `;
+        document.body.appendChild(this.loupeCanvas);
+        this.loupeCtx = this.loupeCanvas.getContext('2d');
+        this.loupeCtx.imageSmoothingEnabled = false;
+    }
+
+    updateLoupe(canvasX, canvasY, screenX, screenY) {
+        if (!this.loupeCanvas || this.currentTab !== 'color-picking') return;
+
+        const radius = 8; // pixels to sample around cursor
+        const srcX = Math.max(0, canvasX - radius);
+        const srcY = Math.max(0, canvasY - radius);
+        const srcW = radius * 2;
+        const srcH = radius * 2;
+
+        this.loupeCtx.clearRect(0, 0, 120, 120);
+        this.loupeCtx.drawImage(this.canvas, srcX, srcY, srcW, srcH, 0, 0, 120, 120);
+
+        // Centre crosshair
+        this.loupeCtx.strokeStyle = 'rgba(255,255,255,0.9)';
+        this.loupeCtx.lineWidth = 1;
+        this.loupeCtx.beginPath();
+        this.loupeCtx.moveTo(60, 48); this.loupeCtx.lineTo(60, 72);
+        this.loupeCtx.moveTo(48, 60); this.loupeCtx.lineTo(72, 60);
+        this.loupeCtx.stroke();
+
+        // Position loupe above and to the right of cursor
+        const offset = 70;
+        let lx = screenX + offset;
+        let ly = screenY - offset;
+        if (lx + 120 > window.innerWidth)  lx = screenX - offset - 120;
+        if (ly < 0)                          ly = screenY + offset;
+
+        this.loupeCanvas.style.left    = lx + 'px';
+        this.loupeCanvas.style.top     = ly + 'px';
+        this.loupeCanvas.style.display = 'block';
+    }
+
+    // ─── REGION SAMPLER ───────────────────────────────────────────────────────
+    initSampleOverlay() {
+        this.sampleOverlay = document.createElement('div');
+        this.sampleOverlay.style.cssText = `
+            position: absolute;
+            border: 2px dashed #667eea;
+            background: rgba(102,126,234,0.15);
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+        `;
+        const canvasContainer = document.querySelector('.canvas-container');
+        if (canvasContainer) canvasContainer.appendChild(this.sampleOverlay);
+    }
+
+    handleSampleStart(e) {
+        if (!e.shiftKey || !this.currentImage) return;
+        if (this.currentTab !== 'color-picking') return;
+        e.preventDefault();
+
+        // sampleStart stores coords relative to the canvas element itself
+        const canvasRect = this.canvas.getBoundingClientRect();
+        this.isSampling = true;
+        this.sampleStart = {
+            x: e.clientX - canvasRect.left,
+            y: e.clientY - canvasRect.top
+        };
+
+        // The overlay lives inside .canvas-container, so offset by where
+        // the canvas sits inside that container
+        const containerRect = this.canvas.parentElement.getBoundingClientRect();
+        const canvasOffsetX = canvasRect.left - containerRect.left;
+        const canvasOffsetY = canvasRect.top  - containerRect.top;
+
+        this.sampleOverlay.style.display = 'block';
+        this.sampleOverlay.style.left   = (canvasOffsetX + this.sampleStart.x) + 'px';
+        this.sampleOverlay.style.top    = (canvasOffsetY + this.sampleStart.y) + 'px';
+        this.sampleOverlay.style.width  = '0px';
+        this.sampleOverlay.style.height = '0px';
+    }
+
+    handleSampleMove(e) {
+        if (!this.isSampling || !this.sampleStart) return;
+
+        const canvasRect    = this.canvas.getBoundingClientRect();
+        const containerRect = this.canvas.parentElement.getBoundingClientRect();
+        const canvasOffsetX = canvasRect.left - containerRect.left;
+        const canvasOffsetY = canvasRect.top  - containerRect.top;
+
+        // Current mouse position relative to canvas
+        const cx = e.clientX - canvasRect.left;
+        const cy = e.clientY - canvasRect.top;
+
+        const x = Math.min(cx, this.sampleStart.x);
+        const y = Math.min(cy, this.sampleStart.y);
+        const w = Math.abs(cx - this.sampleStart.x);
+        const h = Math.abs(cy - this.sampleStart.y);
+
+        this.sampleOverlay.style.left   = (canvasOffsetX + x) + 'px';
+        this.sampleOverlay.style.top    = (canvasOffsetY + y) + 'px';
+        this.sampleOverlay.style.width  = w + 'px';
+        this.sampleOverlay.style.height = h + 'px';
+    }
+
+    handleSampleEnd(e) {
+        if (!this.isSampling) return;
+        this.isSampling = false;
+        this.sampleOverlay.style.display = 'none';
+
+        const canvasRect = this.canvas.getBoundingClientRect();
+        const scaleX     = this.canvas.width  / canvasRect.width;
+        const scaleY     = this.canvas.height / canvasRect.height;
+
+        // End position relative to canvas
+        const cx = e.clientX - canvasRect.left;
+        const cy = e.clientY - canvasRect.top;
+
+        const x1 = Math.round(Math.min(this.sampleStart.x, cx) * scaleX);
+        const y1 = Math.round(Math.min(this.sampleStart.y, cy) * scaleY);
+        const x2 = Math.round(Math.max(this.sampleStart.x, cx) * scaleX);
+        const y2 = Math.round(Math.max(this.sampleStart.y, cy) * scaleY);
+
+        const w = x2 - x1;
+        const h = y2 - y1;
+        if (w < 3 || h < 3) return; // Too small — treat as normal click
+
+        const regionData = this.ctx.getImageData(x1, y1, w, h).data;
+        let rSum = 0, gSum = 0, bSum = 0, count = 0;
+
+        for (let i = 0; i < regionData.length; i += 4) {
+            if (regionData[i + 3] < 128) continue;
+            rSum += regionData[i];
+            gSum += regionData[i + 1];
+            bSum += regionData[i + 2];
+            count++;
+        }
+
+        if (count === 0) return;
+
+        const rgb = {
+            r: Math.round(rSum / count),
+            g: Math.round(gSum / count),
+            b: Math.round(bSum / count)
+        };
+        const hex = this.rgbToHex(rgb.r, rgb.g, rgb.b);
+        const hsl = this.rgbToHsl(rgb.r, rgb.g, rgb.b);
+        const hsv = this.rgbToHsv(rgb.r, rgb.g, rgb.b);
+
+        this.currentColor = { rgb, hex, hsl, hsv };
+        this.updateColorInfo(rgb, hex, hsl, hsv);
+        this.addToColorHistory({ rgb, hex, hsl, hsv });
+        this.pinColorBtn.disabled = false;
+        this.updateLiveFeedback();
+        this.showNotification(`Sampled region average: ${hex}`, 'success');
+    }
+
+    // ─── COLOR HISTORY ────────────────────────────────────────────────────────
+    addToColorHistory(color) {
+        // Avoid consecutive duplicates
+        if (this.colorHistory.length > 0 && this.colorHistory[0].hex === color.hex) return;
+        this.colorHistory.unshift({ ...color });
+        if (this.colorHistory.length > 10) this.colorHistory.pop();
+        this.renderColorHistory();
+    }
+
+    renderColorHistory() {
+        const container = document.getElementById('colorHistoryStrip');
+        if (!container) return;
+        container.innerHTML = '';
+        this.colorHistory.forEach(color => {
+            const swatch = document.createElement('div');
+            swatch.className = 'history-swatch';
+            swatch.style.backgroundColor = color.hex;
+            swatch.title = color.hex;
+            swatch.addEventListener('click', () => {
+                this.currentColor = { ...color };
+                this.updateColorInfo(color.rgb, color.hex, color.hsl, color.hsv);
+                this.pinColorBtn.disabled = false;
+            });
+            container.appendChild(swatch);
+        });
+    }
+
+    // ─── COLOR SCRIPT / ZONE VIEW ─────────────────────────────────────────────
+    generateColorScript() {
+        if (!this.currentImageData) {
+            this.showNotification('Upload an image first!', 'warning');
+            return;
+        }
+
+        // Toggle off if already showing
+        if (this.colorScriptActive) {
+            this.clearColorScript();
+            return;
+        }
+
+        const cols = 3, rows = 2;
+        const zoneW = Math.floor(this.canvas.width  / cols);
+        const zoneH = Math.floor(this.canvas.height / rows);
+        const zones = [];
+
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+                const x = col * zoneW;
+                const y = row * zoneH;
+                const src = this.originalImageData || this.currentImageData;
+                const regionData = this.getRegionFromImageData(src, x, y, zoneW, zoneH);
+
+                const rgb = this.getDominantColorFromRegion(regionData);
+                if (!rgb) continue;
+
+                zones.push({
+                    col, row,
+                    hex: this.rgbToHex(rgb.r, rgb.g, rgb.b),
+                    rgb,
+                    label: ['TL','TM','TR','BL','BM','BR'][row * cols + col],
+                    fullLabel: ['Top Left','Top Mid','Top Right','Bot Left','Bot Mid','Bot Right'][row * cols + col]
+                });
+            }
+        }
+
+        this.colorScriptActive = true;
+        this.colorScriptZones  = zones;
+        this.drawColorScriptGrid(cols, rows);
+        this.renderColorScript(zones, cols, rows);
+
+        // Update button to show active state
+        const btn = document.getElementById('colorScriptBtn');
+        if (btn) {
+            btn.textContent = '🎬 Color Script ✓';
+            btn.style.background = '#5a3a82';
+        }
+    }
+
+    // Extract pixels from an ImageData object without calling getImageData again
+    getRegionFromImageData(imageData, x, y, w, h) {
+        const result = new Uint8ClampedArray(w * h * 4);
+        const srcW = imageData.width;
+        for (let row = 0; row < h; row++) {
+            for (let col = 0; col < w; col++) {
+                const srcIdx = ((y + row) * srcW + (x + col)) * 4;
+                const dstIdx = (row * w + col) * 4;
+                result[dstIdx]     = imageData.data[srcIdx];
+                result[dstIdx + 1] = imageData.data[srcIdx + 1];
+                result[dstIdx + 2] = imageData.data[srcIdx + 2];
+                result[dstIdx + 3] = imageData.data[srcIdx + 3];
+            }
+        }
+        return result;
+    }
+
+    // Get the most visually representative (dominant) color from a pixel array.
+    // Uses quantized frequency counting, then picks the most frequent color
+    // that isn't near-black or near-white (those can still win if truly dominant).
+    getDominantColorFromRegion(pixelData) {
+        const colorMap = new Map();
+        const QUANT = 16; // quantization step — smaller = more distinct buckets
+
+        let totalPixels = 0;
+        let darkCount   = 0;
+
+        // First pass: count quantized colors
+        for (let i = 0; i < pixelData.length; i += 4) {
+            if (pixelData[i + 3] < 128) continue;
+            const r = Math.round(pixelData[i]     / QUANT) * QUANT;
+            const g = Math.round(pixelData[i + 1] / QUANT) * QUANT;
+            const b = Math.round(pixelData[i + 2] / QUANT) * QUANT;
+
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+            if (brightness < 20) { darkCount++; }
+
+            totalPixels++;
+            const key = `${r},${g},${b}`;
+            colorMap.set(key, (colorMap.get(key) || 0) + 1);
+        }
+
+        if (totalPixels === 0) return null;
+
+        // Sort by frequency
+        const sorted = [...colorMap.entries()]
+            .map(([key, count]) => {
+                const [r, g, b] = key.split(',').map(Number);
+                const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                return { r, g, b, count, brightness };
+            })
+            .sort((a, b) => b.count - a.count);
+
+        // Decide whether near-black is truly dominant (>60% of zone) or just noise
+        const darkFraction = darkCount / totalPixels;
+
+        // Try to find the most frequent non-near-black color first
+        // unless the zone really IS mostly black
+        const nonDark = sorted.filter(c => c.brightness >= 25);
+
+        if (nonDark.length > 0 && darkFraction < 0.60) {
+            // Return the most frequent non-trivial color
+            const best = nonDark[0];
+            return { r: best.r, g: best.g, b: best.b };
+        }
+
+        // Zone is genuinely very dark — return actual dominant color
+        const best = sorted[0];
+        return { r: best.r, g: best.g, b: best.b };
+    }
+
+    drawColorScriptGrid(cols, rows) {
+        let overlay = document.getElementById('colorScriptOverlay');
+        if (!overlay) {
+            overlay = document.createElement('canvas');
+            overlay.id = 'colorScriptOverlay';
+            overlay.style.cssText = `
+                position: absolute;
+                pointer-events: none;
+                z-index: 10;
+                image-rendering: pixelated;
+            `;
+            // Append to the container, not the canvas itself
+            this.canvas.parentElement.appendChild(overlay);
+        }
+
+        overlay.style.display = 'block';
+        this.positionScriptOverlay(overlay);
+
+        const gCtx = overlay.getContext('2d');
+        gCtx.clearRect(0, 0, overlay.width, overlay.height);
+
+        const zoneW = overlay.width  / cols;
+        const zoneH = overlay.height / rows;
+
+        gCtx.save();
+        gCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+        gCtx.lineWidth = 1.5;
+        gCtx.shadowColor = 'rgba(0,0,0,0.6)';
+        gCtx.shadowBlur = 3;
+
+        for (let c = 1; c < cols; c++) {
+            gCtx.beginPath();
+            gCtx.moveTo(c * zoneW, 0);
+            gCtx.lineTo(c * zoneW, overlay.height);
+            gCtx.stroke();
+        }
+        for (let r = 1; r < rows; r++) {
+            gCtx.beginPath();
+            gCtx.moveTo(0, r * zoneH);
+            gCtx.lineTo(overlay.width, r * zoneH);
+            gCtx.stroke();
+        }
+
+        if (this.colorScriptZones) {
+            this.colorScriptZones.forEach(zone => {
+                const x = zone.col * zoneW;
+                const y = zone.row * zoneH;
+
+                gCtx.shadowBlur = 0;
+                gCtx.fillStyle = 'rgba(0,0,0,0.55)';
+                const lw = 26, lh = 14;
+                gCtx.beginPath();
+                gCtx.roundRect(x + 6, y + 6, lw, lh, 3);
+                gCtx.fill();
+
+                gCtx.fillStyle = 'rgba(255,255,255,0.95)';
+                gCtx.font = `bold ${Math.max(9, overlay.width / 80)}px system-ui, sans-serif`;
+                gCtx.fillText(zone.label, x + 9, y + 16);
+
+                gCtx.fillStyle = zone.hex;
+                gCtx.strokeStyle = 'rgba(255,255,255,0.8)';
+                gCtx.lineWidth = 1.5;
+                gCtx.shadowBlur = 2;
+                gCtx.shadowColor = 'rgba(0,0,0,0.5)';
+                gCtx.beginPath();
+                gCtx.arc(x + zoneW - 12, y + 12, 7, 0, Math.PI * 2);
+                gCtx.fill();
+                gCtx.stroke();
+            });
+        }
+
+        gCtx.restore();
+    }
+
+    // Align overlay pixel-for-pixel with the rendered canvas element
+    positionScriptOverlay(overlay) {
+        const canvasRect    = this.canvas.getBoundingClientRect();
+        const containerRect = this.canvas.parentElement.getBoundingClientRect();
+
+        // Position relative to the container
+        const offsetLeft = canvasRect.left - containerRect.left;
+        const offsetTop  = canvasRect.top  - containerRect.top;
+
+        // Pixel dimensions match the canvas's internal resolution
+        overlay.width  = this.canvas.width;
+        overlay.height = this.canvas.height;
+
+        // CSS size matches the canvas's rendered (CSS pixel) size exactly
+        overlay.style.left   = offsetLeft + 'px';
+        overlay.style.top    = offsetTop  + 'px';
+        overlay.style.width  = canvasRect.width  + 'px';
+        overlay.style.height = canvasRect.height + 'px';
+    }
+
+    clearColorScript() {
+        this.colorScriptActive = false;
+        this.colorScriptZones  = null;
+
+        const overlay = document.getElementById('colorScriptOverlay');
+        if (overlay) overlay.style.display = 'none';
+
+        const container = document.getElementById('colorScriptDisplay');
+        if (container) container.innerHTML = '';
+
+        const btn = document.getElementById('colorScriptBtn');
+        if (btn) {
+            btn.textContent = '🎬 Color Script';
+            btn.style.background = '';
+        }
+    }
+
+    renderColorScript(zones, cols, rows) {
+        const container = document.getElementById('colorScriptDisplay');
+        if (!container) return;
+        container.innerHTML = '';
+
+        // ── Header ──
+        const header = document.createElement('div');
+        header.className = 'cs-header';
+        header.innerHTML = `
+            <span class="cs-title">🎬 Color Script</span>
+            <span class="cs-subtitle">${cols}×${rows} zone average</span>
+        `;
+        container.appendChild(header);
+
+        // ── Grid that mirrors the image layout ──
+        const grid = document.createElement('div');
+        grid.className = 'cs-panel-grid';
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        grid.style.gridTemplateRows    = `repeat(${rows}, 1fr)`;
+
+        zones.forEach(zone => {
+            const brightness = (zone.rgb.r * 299 + zone.rgb.g * 587 + zone.rgb.b * 114) / 1000;
+            const textColor  = brightness > 145 ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.9)';
+
+            const cell = document.createElement('div');
+            cell.className = 'cs-panel-cell';
+            cell.style.cssText = `background:${zone.hex}; color:${textColor};`;
+            cell.title = `${zone.fullLabel} — click to copy ${zone.hex}`;
+
+            cell.innerHTML = `
+                <span class="cs-panel-label">${zone.label}</span>
+                <span class="cs-panel-hex">${zone.hex}</span>
+            `;
+
+            cell.addEventListener('click', () => {
+                this.copyToClipboard(zone.hex);
+                this.showNotification(`Copied ${zone.hex}`, 'success');
+                // Set as current color too
+                const hsl = this.rgbToHsl(zone.rgb.r, zone.rgb.g, zone.rgb.b);
+                const hsv = this.rgbToHsv(zone.rgb.r, zone.rgb.g, zone.rgb.b);
+                this.currentColor = { rgb: zone.rgb, hex: zone.hex, hsl, hsv };
+                this.updateColorInfo(zone.rgb, zone.hex, hsl, hsv);
+            });
+
+            grid.appendChild(cell);
+        });
+
+        container.appendChild(grid);
+
+        // ── Horizontal strip (film-style read order) ──
+        const stripWrap = document.createElement('div');
+        stripWrap.className = 'cs-strip-wrap';
+        stripWrap.innerHTML = '<div class="cs-strip-label">Film strip (L→R, T→B)</div>';
+
+        const strip = document.createElement('div');
+        strip.className = 'cs-strip';
+
+        // Sort zones left-to-right, top-to-bottom
+        const ordered = [...zones].sort((a, b) => a.row !== b.row ? a.row - b.row : a.col - b.col);
+        ordered.forEach((zone, i) => {
+            const seg = document.createElement('div');
+            seg.className = 'cs-strip-seg';
+            seg.style.background = zone.hex;
+            seg.title = `${zone.fullLabel}: ${zone.hex}`;
+            seg.addEventListener('click', () => {
+                this.copyToClipboard(zone.hex);
+                this.showNotification(`Copied ${zone.hex}`, 'success');
+            });
+            strip.appendChild(seg);
+
+            // Divider between segments
+            if (i < ordered.length - 1) {
+                const div = document.createElement('div');
+                div.className = 'cs-strip-divider';
+                strip.appendChild(div);
+            }
+        });
+
+        stripWrap.appendChild(strip);
+        container.appendChild(stripWrap);
+    }
+
+    showNotification(message, type = 'success') {
+        let notif = document.getElementById('app-notification');
+        if (!notif) {
+            notif = document.createElement('div');
+            notif.id = 'app-notification';
+            notif.style.cssText = `
+                position: fixed;
+                bottom: 24px;
+                left: 50%;
+                transform: translateX(-50%) translateY(20px);
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                z-index: 10000;
+                opacity: 0;
+                transition: all 0.25s ease;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                pointer-events: none;
+            `;
+            document.body.appendChild(notif);
+        }
+        
+        const styles = {
+            success: { bg: '#d4edda', text: '#155724', border: '#c3e6cb' },
+            warning: { bg: '#fff3cd', text: '#856404', border: '#ffeaa7' },
+            error:   { bg: '#f8d7da', text: '#721c24', border: '#f5c6cb' }
+        };
+        const s = styles[type] || styles.warning;
+        notif.textContent = message;
+        notif.style.backgroundColor = s.bg;
+        notif.style.color = s.text;
+        notif.style.border = `2px solid ${s.border}`;
+        
+        // Clear any existing hide timer
+        clearTimeout(notif._hideTimer);
+        
+        // Animate in
+        requestAnimationFrame(() => {
+            notif.style.opacity = '1';
+            notif.style.transform = 'translateX(-50%) translateY(0)';
+        });
+        
+        notif._hideTimer = setTimeout(() => {
+            notif.style.opacity = '0';
+            notif.style.transform = 'translateX(-50%) translateY(20px)';
+        }, 2500);
+    }
+
     copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(() => {
-            console.log('Copied to clipboard:', text);
-        }).catch(err => {
-            console.error('Failed to copy: ', err);
-            const textArea = document.createElement('textarea');
-            textArea.value = text;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
+        navigator.clipboard.writeText(text).catch(err => {
+            console.error('Failed to copy to clipboard:', err);
+            this.showNotification('Copy failed — try again', 'error');
         });
     }
     
@@ -1705,34 +2419,8 @@ class ColorAnalyzer {
     }
     
     hslToHex(h, s, l) {
-        s /= 100;
-        l /= 100;
-        
-        const c = (1 - Math.abs(2 * l - 1)) * s;
-        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-        const m = l - c / 2;
-        
-        let r = 0, g = 0, b = 0;
-        
-        if (h >= 0 && h < 60) {
-            r = c; g = x; b = 0;
-        } else if (h >= 60 && h < 120) {
-            r = x; g = c; b = 0;
-        } else if (h >= 120 && h < 180) {
-            r = 0; g = c; b = x;
-        } else if (h >= 180 && h < 240) {
-            r = 0; g = x; b = c;
-        } else if (h >= 240 && h < 300) {
-            r = x; g = 0; b = c;
-        } else if (h >= 300 && h < 360) {
-            r = c; g = 0; b = x;
-        }
-        
-        const red = Math.round((r + m) * 255);
-        const green = Math.round((g + m) * 255);
-        const blue = Math.round((b + m) * 255);
-        
-        return this.rgbToHex(red, green, blue);
+        const { r, g, b } = this.hslToRgb(h, s, l);
+        return this.rgbToHex(r, g, b);
     }
 }
 
@@ -1794,6 +2482,7 @@ document.addEventListener('DOMContentLoaded', () => {
             analyzer.canvasWrapper.style.display = 'flex';
             analyzer.clearAnalysis();
             analyzer.updateLiveFeedback();
+            analyzer.showAutoAnalyzePrompt();
             showConnectionStatus('Image received!', 'success');
         };
         
@@ -1856,137 +2545,3 @@ document.addEventListener('DOMContentLoaded', () => {
         if (reconnectTimeout) clearTimeout(reconnectTimeout);
     });
 });
-    // WebSocket connection for receiving phone camera frames
-    const WS_URL = (location.origin.replace(/^http/, 'ws')) + '/';
-    let ws;
-    let reconnectTimeout;
-    
-    function connectWebSocket() {
-        try {
-            ws = new WebSocket(WS_URL);
-            
-            ws.addEventListener('open', () => {
-                console.log('WebSocket connected as viewer');
-                // Identify as viewer
-                ws.send(JSON.stringify({ type: 'introduce', role: 'viewer' }));
-                
-                // Show connection status (optional)
-                showConnectionStatus('Connected to phone camera', 'success');
-            });
-            
-            ws.addEventListener('message', (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.type === 'frame' && data.image) {
-                        // Convert base64 image to actual image and load it
-                        loadImageFromBase64(data.image);
-                    }
-                } catch (e) {
-                    console.error('Error parsing WebSocket message:', e);
-                }
-            });
-            
-            ws.addEventListener('close', () => {
-                console.log('WebSocket disconnected');
-                showConnectionStatus('Disconnected from phone', 'warning');
-                
-                // Attempt to reconnect after 3 seconds
-                reconnectTimeout = setTimeout(() => {
-                    console.log('Attempting to reconnect...');
-                    connectWebSocket();
-                }, 3000);
-            });
-            
-            ws.addEventListener('error', (error) => {
-                console.error('WebSocket error:', error);
-                showConnectionStatus('Connection error', 'error');
-            });
-            
-        } catch (error) {
-            console.error('Failed to create WebSocket:', error);
-        }
-    }
-    
-    function loadImageFromBase64(base64Data) {
-        const img = new Image();
-        
-        img.onload = () => {
-            // Automatically display the received image
-            analyzer.displayImage(img);
-            analyzer.uploadArea.style.display = 'none';
-            analyzer.canvasWrapper.style.display = 'flex';
-            analyzer.clearAnalysis();
-            analyzer.updateLiveFeedback();
-            
-            console.log('Frame received and displayed');
-        };
-        
-        img.onerror = () => {
-            console.error('Failed to load received image');
-        };
-        
-        img.src = base64Data;
-    }
-    
-    function showConnectionStatus(message, type) {
-        // Create or update status indicator
-        let statusDiv = document.getElementById('ws-status');
-        
-        if (!statusDiv) {
-            statusDiv = document.createElement('div');
-            statusDiv.id = 'ws-status';
-            statusDiv.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                padding: 10px 15px;
-                border-radius: 8px;
-                font-size: 12px;
-                font-weight: 600;
-                z-index: 10000;
-                transition: all 0.3s ease;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            `;
-            document.body.appendChild(statusDiv);
-        }
-        
-        statusDiv.textContent = message;
-        
-        // Set color based on type
-        const colors = {
-            success: { bg: '#d4edda', text: '#155724', border: '#c3e6cb' },
-            warning: { bg: '#fff3cd', text: '#856404', border: '#ffeaa7' },
-            error: { bg: '#f8d7da', text: '#721c24', border: '#f5c6cb' }
-        };
-        
-        const color = colors[type] || colors.warning;
-        statusDiv.style.backgroundColor = color.bg;
-        statusDiv.style.color = color.text;
-        statusDiv.style.border = `2px solid ${color.border}`;
-        
-        // Show the status
-        statusDiv.style.opacity = '1';
-        statusDiv.style.transform = 'translateY(0)';
-        
-        // Auto-hide after 3 seconds for success messages
-        if (type === 'success') {
-            setTimeout(() => {
-                statusDiv.style.opacity = '0';
-                statusDiv.style.transform = 'translateY(-10px)';
-            }, 3000);
-        }
-    }
-    
-    // Start WebSocket connection
-    connectWebSocket();
-    
-    // Clean up on page unload
-    window.addEventListener('beforeunload', () => {
-        if (ws) {
-            ws.close();
-        }
-        if (reconnectTimeout) {
-            clearTimeout(reconnectTimeout);
-        }
-    });

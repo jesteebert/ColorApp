@@ -30,6 +30,11 @@ wss.on('connection', (ws, req) => {
 
       // If phone sends an image frame, broadcast to viewers
       if (data.type === 'frame' && typeof data.image === 'string') {
+        // Reject oversized frames (~3.75MB image limit)
+        if (data.image.length > 5_000_000) {
+          console.warn('Frame rejected: payload too large');
+          return;
+        }
         // Broadcast to all viewers connected
         wss.clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN && client.isViewer) {
@@ -56,4 +61,3 @@ server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Open index.html on the computer and phone.html on your phone (see README steps).`);
 });
-// im gonna jork it fr this time
